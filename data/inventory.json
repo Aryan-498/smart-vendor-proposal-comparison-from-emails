@@ -1,0 +1,14 @@
+{
+  "rice": {
+    "stock": 1000,
+    "cost_price": 40
+  },
+  "wheat": {
+    "stock": 800,
+    "cost_price": 35
+  },
+  "corn": {
+    "stock": 500,
+    "cost_price": 25
+  }
+}
