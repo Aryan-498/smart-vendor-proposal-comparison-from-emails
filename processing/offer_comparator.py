@@ -8,7 +8,6 @@ def get_best_offers():
     best_offers = []
 
     for product, offer in results.items():
-
         best_offers.append({
             "product": product,
             "vendor": offer["vendor"],
@@ -31,11 +30,9 @@ def print_best_offers():
     print("\nBEST OFFERS\n")
 
     for offer in best_offers:
-
-        print("Product:", offer["product"].upper())
-        print("Vendor:", offer["vendor"])
-        print("Price:", offer["price"])
+        print("Product :", offer["product"].upper())
+        print("Vendor  :", offer["vendor"])
+        print("Price   :", offer["price"])
         print("Quantity:", offer["quantity"])
-        print("Score:", offer["score"])
-
+        print("Score   :", offer["score"])
         print("-" * 40)

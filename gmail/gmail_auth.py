@@ -7,6 +7,7 @@ from config.settings import GMAIL_SCOPES
 TOKEN_PATH = "config/token.json"
 CREDENTIALS_PATH = "config/credentials.json"
 
+
 def authenticate_gmail():
 
     creds = None

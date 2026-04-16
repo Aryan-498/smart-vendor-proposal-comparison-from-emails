@@ -26,11 +26,7 @@ def update_vendor(vendor):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT id FROM vendors WHERE name=?",
-        (vendor,)
-    )
-
+    cursor.execute("SELECT id FROM vendors WHERE name=?", (vendor,))
     row = cursor.fetchone()
 
     if row:
@@ -40,7 +36,7 @@ def update_vendor(vendor):
         )
     else:
         cursor.execute(
-            "INSERT INTO vendors (name, total_orders) VALUES (?,1)",
+            "INSERT INTO vendors (name, total_orders) VALUES (?, 1)",
             (vendor,)
         )
 

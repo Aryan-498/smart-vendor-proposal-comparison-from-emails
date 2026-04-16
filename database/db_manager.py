@@ -5,11 +5,8 @@ DATABASE_PATH = "data/vendor_history.db"
 
 
 def get_connection():
-    """
-    Creates a connection to the SQLite database.
-    """
+    """Creates a connection to the SQLite database."""
 
-    # ensure data folder exists
     os.makedirs("data", exist_ok=True)
 
     conn = sqlite3.connect(DATABASE_PATH)
@@ -18,9 +15,7 @@ def get_connection():
 
 
 def create_tables():
-    """
-    Create required tables if they do not exist.
-    """
+    """Create all required tables if they do not exist."""
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -46,6 +41,15 @@ def create_tables():
         vendor TEXT,
         intent TEXT,
         email_date TEXT
+    )
+    """)
+
+    # IMPROVEMENT: track processed email IDs to prevent duplicate inserts
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS processed_emails (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email_id TEXT UNIQUE,
+        processed_at TEXT DEFAULT (datetime('now'))
     )
     """)
 

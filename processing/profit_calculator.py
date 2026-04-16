@@ -3,10 +3,8 @@ from inventory.inventory_manager import get_cost_price
 
 def calculate_profit(product, price):
 
-    product = product.lower()
-
+    product = product.lower().strip()
     cost = get_cost_price(product)
-
     profit = price - cost
 
     return profit

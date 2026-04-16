@@ -3,7 +3,7 @@ def intent_score(intent):
     if not intent:
         return 0.1
 
-    intent = intent.lower()
+    intent = intent.lower().strip()
 
     mapping = {
         "order": 1.0,

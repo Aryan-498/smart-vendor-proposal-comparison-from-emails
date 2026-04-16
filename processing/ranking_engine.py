@@ -7,7 +7,32 @@ from processing.profit_calculator import calculate_profit, profit_score
 from inventory.inventory_manager import get_available_stock
 
 
+def get_max_vendor_orders():
+    """Fetch the maximum total_orders across all vendors for normalization."""
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT MAX(total_orders) FROM vendors")
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    if not row or row[0] is None:
+        return 1
+
+    return max(row[0], 1)
+
+
 def get_vendor_score(vendor):
+    """
+    BUG FIX: previously returned math.log(1 + total_orders) which is unbounded.
+    A vendor with 1000 orders scored ~6.9 while all other components cap at 1.0,
+    causing vendor weight to dominate completely.
+
+    Fix: normalize using log(1 + orders) / log(1 + max_orders) → always 0.0–1.0.
+    """
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -21,11 +46,13 @@ def get_vendor_score(vendor):
     conn.close()
 
     if not row:
-        return 0
+        return 0.0
 
     total_orders = row[0]
+    max_orders = get_max_vendor_orders()
 
-    return math.log(1 + total_orders)
+    # BUG FIX: normalize to 0–1 range
+    return math.log(1 + total_orders) / math.log(1 + max_orders)
 
 
 def rank_offers(product):
@@ -43,42 +70,26 @@ def rank_offers(product):
 
     conn.close()
 
-    product_rows = []
-
-    for row in rows:
-
-        p, quantity, unit, price, vendor, intent = row
-
-        if normalize_product(p) == product:
-            product_rows.append(row)
+    product_rows = [
+        row for row in rows
+        if normalize_product(row[0]) == product
+    ]
 
     if not product_rows:
         return None
 
-    # inventory filter
+    # inventory filter: only keep offers within available stock
     available_stock = get_available_stock(product)
 
-    valid_rows = []
-
-    for row in product_rows:
-
-        p, quantity, unit, price, vendor, intent = row
-
-        if quantity <= available_stock:
-            valid_rows.append(row)
+    valid_rows = [
+        row for row in product_rows
+        if row[1] <= available_stock
+    ]
 
     if not valid_rows:
         return None
 
-    profits = []
-
-    for row in valid_rows:
-
-        p, quantity, unit, price, vendor, intent = row
-
-        profit = calculate_profit(product, price)
-
-        profits.append(profit)
+    profits = [calculate_profit(product, row[3]) for row in valid_rows]
 
     max_profit = max(profits) if profits else 1
     max_quantity = max(row[1] for row in valid_rows)
@@ -87,28 +98,28 @@ def rank_offers(product):
 
     for row in valid_rows:
 
-        product, quantity, unit, price, vendor, intent = row
+        p, quantity, unit, price, vendor, intent = row
 
-        profit = calculate_profit(product, price)
+        profit = calculate_profit(p, price)
 
         p_score = profit_score(profit, max_profit)
 
         quantity_score = quantity / max_quantity if max_quantity else 0
 
-        vendor_score = get_vendor_score(vendor)
+        vendor_sc = get_vendor_score(vendor)  # now properly 0–1
 
         intent_sc = intent_score(intent)
 
         score = (
             0.4 * p_score +
             0.3 * quantity_score +
-            0.2 * vendor_score +
+            0.2 * vendor_sc +
             0.1 * intent_sc
         )
 
         offers.append({
             "vendor": vendor,
-            "product": product,
+            "product": p,
             "price": price,
             "quantity": quantity,
             "score": score
@@ -130,10 +141,7 @@ def rank_all_products():
 
     conn.close()
 
-    products = set()
-
-    for row in rows:
-        products.add(normalize_product(row[0]))
+    products = set(normalize_product(row[0]) for row in rows)
 
     results = {}
 

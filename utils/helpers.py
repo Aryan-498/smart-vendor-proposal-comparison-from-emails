@@ -2,15 +2,15 @@ def safe_float(value):
 
     try:
         return float(value)
-    except:
-        return 0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def safe_int(value):
 
     try:
         return int(value)
-    except:
+    except (TypeError, ValueError):
         return 0
 
 

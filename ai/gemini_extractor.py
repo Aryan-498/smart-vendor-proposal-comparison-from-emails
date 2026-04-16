@@ -1,22 +1,27 @@
 import json
 from ai.gemini_client import get_client
+from utils.logger import log
 
 
 def clean_json(text):
-    """
-    Removes markdown formatting if Gemini returns JSON wrapped in ```json
-    """
+    """Remove markdown formatting if Gemini wraps JSON in ```json blocks."""
+
     text = text.strip()
     text = text.replace("```json", "")
     text = text.replace("```", "")
-    return text
+
+    return text.strip()
 
 
 def extract_offer(email_text):
     """
     Extracts vendor offers from an email using Gemini.
-    Returns a list of offers.
+    Returns a list of offer dicts.
     """
+
+    if not email_text or not email_text.strip():
+        log("Empty email body — skipping extraction.")
+        return []
 
     client = get_client()
 
@@ -35,7 +40,7 @@ Rules:
 - Detect vendor name from signature if possible.
 - Detect intent: order, negotiation, inquiry, or unknown.
 
-Return ONLY JSON in this format:
+Return ONLY a valid JSON array in this exact format (no markdown, no explanation):
 
 [
  {{
@@ -53,7 +58,6 @@ Email:
 """
 
     try:
-
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt
@@ -69,7 +73,10 @@ Email:
 
         return offers
 
-    except Exception as e:
+    except json.JSONDecodeError as e:
+        log(f"Gemini returned invalid JSON: {e}")
+        return []
 
-        print("Gemini extraction failed:", e)
+    except Exception as e:
+        log(f"Gemini extraction failed: {e}")
         return []

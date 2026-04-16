@@ -1,7 +1,9 @@
 from gmail.email_reader import fetch_emails
 from ai.gemini_extractor import extract_offer
 from database.offer_history import save_offer
+from database.db_manager import create_tables
 from processing.normalization import normalize_offer
+from utils.logger import log
 
 AUTOMATED_KEYWORDS = [
     "no-reply",
@@ -40,13 +42,17 @@ def is_automated_email(sender):
 
     return False
 
+
 def main():
 
-    print("Fetching emails...")
+    # BUG FIX: ensure tables exist before any DB operations
+    create_tables()
 
-    emails = fetch_emails("2024/01/01", "2026/12/31")
+    log("Fetching emails...")
 
-    print(f"Total emails fetched: {len(emails)}\n")
+    emails = fetch_emails("2026/03/07", "2026/04/30")
+
+    log(f"Total emails fetched: {len(emails)}")
 
     for email in emails:
 
@@ -55,14 +61,15 @@ def main():
 
         # filter spam / automated emails
         if is_automated_email(sender):
-           print(f"Skipping automated email from: {sender}")
-           continue
+            log(f"Skipping automated email from: {sender}")
+            continue
 
-        print(f"Processing email from: {sender}")
+        log(f"Processing email from: {sender}")
 
         offers = extract_offer(body)
 
         if not offers:
+            log("No offers found in email.")
             continue
 
         for offer in offers:
@@ -73,9 +80,11 @@ def main():
 
             offer = normalize_offer(offer)
 
-            save_offer(offer)
-
-            print("Extracted offer:", offer)
+            try:
+                save_offer(offer)
+                log(f"Saved offer: {offer}")
+            except Exception as e:
+                log(f"Failed to save offer: {e}")
 
         print("-" * 50)
 
