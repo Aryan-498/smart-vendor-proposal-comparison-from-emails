@@ -1,25 +1,62 @@
 """
-User Dashboard — visible to all logged-in users.
-Shows: best offers per product, offer history, vendor leaderboard.
+User Dashboard — all logged-in users.
+
+- View inventory (read-only)
+- Submit a new offer for any product
+- View ONLY their own past offers
+- View best offers (AI-ranked, all users)
+- View vendor leaderboard
 """
 
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from database.db_manager import get_connection
 from processing.offer_comparator import get_best_offers
-from inventory.inventory_manager import load_inventory
+from inventory.inventory_manager import load_inventory, get_available_stock
+from processing.normalization import normalize_product
 
 
-def _fetch_all_offers():
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _save_web_offer(product, quantity, price, user_email, user_name):
+    """Save an offer submitted via the website."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT product, quantity, unit, price, vendor, intent, email_date FROM offers ORDER BY id DESC"
-    )
+
+    cursor.execute("""
+        INSERT INTO offers (product, quantity, unit, price, vendor, intent,
+                            email_date, source, user_email, vendor_email, status)
+        VALUES (?, ?, 'kg', ?, ?, 'offer', datetime('now'), 'web', ?, ?, 'pending')
+    """, (product, quantity, price, user_name, user_email, user_email))
+
+    # upsert vendor
+    cursor.execute("SELECT id FROM vendors WHERE name=?", (user_name,))
+    if cursor.fetchone():
+        cursor.execute(
+            "UPDATE vendors SET total_orders=total_orders+1, last_seen=datetime('now') WHERE name=?",
+            (user_name,)
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO vendors (name, total_orders, last_seen) VALUES (?,1,datetime('now'))",
+            (user_name,)
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def _my_offers(user_email):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT product, quantity, unit, price, intent, status, email_date
+        FROM offers WHERE user_email=? ORDER BY id DESC
+    """, (user_email,))
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -28,110 +65,151 @@ def _fetch_all_offers():
 def _fetch_vendors():
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, total_orders, last_seen FROM vendors ORDER BY total_orders DESC")
+    cursor.execute("SELECT name, total_orders, last_seen FROM vendors ORDER BY total_orders DESC LIMIT 10")
     rows = cursor.fetchall()
     conn.close()
     return rows
 
 
-def render():
-    st.markdown("## Best Offers")
-    st.markdown('<div class="section-label">AI-ranked top offers per product</div>', unsafe_allow_html=True)
+# ── main render ───────────────────────────────────────────────────────────────
 
-    best = get_best_offers()
+def render(user: dict):
+    name  = user["name"]
+    email = user["email"]
 
-    if not best:
-        st.markdown('<div class="info-box">No offers in the database yet. Run the email processor to populate offers.</div>', unsafe_allow_html=True)
-    else:
-        # Metric row
-        cols = st.columns(len(best))
-        for i, offer in enumerate(best):
-            with cols[i]:
-                st.metric(
-                    label=offer["product"].upper(),
-                    value=f"₹{offer['price']}/kg",
-                    delta=f"Score {offer['score']}"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📦 Inventory", "✍ Make an Offer", "📋 My Offers", "🏆 Best Offers"
+    ])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 1 — Inventory (read-only)
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab1:
+        st.markdown("## Current Inventory")
+        st.markdown('<div class="info-box">This is the live inventory. You can only submit offers for quantities within available stock.</div>', unsafe_allow_html=True)
+
+        inv = load_inventory()
+        if not inv:
+            st.markdown('<div class="info-box">No inventory data found.</div>', unsafe_allow_html=True)
+        else:
+            rows = []
+            for p, v in inv.items():
+                stock = v.get("stock", 0)
+                rows.append({
+                    "Product":         p.title(),
+                    "Available (kg)":  stock,
+                    "Cost Price (₹/kg)": v.get("cost_price", 0),
+                    "Status":          "✅ In Stock" if stock > 0 else "❌ Out of Stock"
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 2 — Submit Offer
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab2:
+        st.markdown("## Submit a New Offer")
+        st.markdown(f'<div class="info-box">Your offer will be submitted as <b>{name}</b> ({email}) and reviewed by our team.</div>', unsafe_allow_html=True)
+
+        inv = load_inventory()
+        products = [p.title() for p in inv.keys()] if inv else []
+
+        if not products:
+            st.warning("No products available in inventory right now.")
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                sel_product = st.selectbox("Product", products, key="offer_product")
+                product_key = sel_product.lower()
+                avail = get_available_stock(product_key)
+                st.caption(f"Available stock: **{avail} kg**")
+
+            with col2:
+                quantity = st.number_input(
+                    "Quantity (kg)",
+                    min_value=1.0,
+                    max_value=float(avail) if avail > 0 else 1.0,
+                    step=10.0,
+                    key="offer_qty"
                 )
 
-        st.markdown('<div class="section-label">Detailed breakdown</div>', unsafe_allow_html=True)
-        df = pd.DataFrame(best)
-        df.columns = [c.title() for c in df.columns]
-        st.dataframe(df, use_container_width=True, hide_index=True)
+            price = st.number_input("Your offered price (₹/kg)", min_value=1.0, step=0.5, key="offer_price")
+            note  = st.text_area("Additional note (optional)", placeholder="e.g. available from next week, bulk discount possible", key="offer_note")
 
-    # ── Offer History ─────────────────────────────────────────────────────────
-    st.markdown("## Offer History")
-    st.markdown('<div class="section-label">All extracted offers from emails</div>', unsafe_allow_html=True)
+            st.markdown("---")
+            col_a, col_b = st.columns([1, 3])
+            with col_a:
+                submit = st.button("📤 Submit Offer", key="submit_offer")
 
-    rows = _fetch_all_offers()
+            if submit:
+                if avail == 0:
+                    st.markdown('<div class="danger-box">This product is currently out of stock. Offers cannot be submitted.</div>', unsafe_allow_html=True)
+                elif quantity > avail:
+                    st.markdown(f'<div class="danger-box">Quantity {quantity} kg exceeds available stock of {avail} kg.</div>', unsafe_allow_html=True)
+                else:
+                    norm_product = normalize_product(product_key)
+                    _save_web_offer(norm_product, quantity, price, email, name)
+                    st.markdown(f'<div class="success-box">✓ Offer submitted! <b>{quantity} kg</b> of <b>{sel_product}</b> at <b>₹{price}/kg</b>. The admin will review it shortly.</div>', unsafe_allow_html=True)
+                    st.balloons()
 
-    if not rows:
-        st.markdown('<div class="info-box">No offer history found.</div>', unsafe_allow_html=True)
-    else:
-        df_hist = pd.DataFrame(rows, columns=["Product", "Quantity", "Unit", "Price", "Vendor", "Intent", "Date"])
-        
-        # Filter controls
-        col1, col2 = st.columns(2)
-        with col1:
-            products = ["All"] + sorted(df_hist["Product"].dropna().unique().tolist())
-            sel_product = st.selectbox("Filter by product", products)
-        with col2:
-            intents = ["All"] + sorted(df_hist["Intent"].dropna().unique().tolist())
-            sel_intent = st.selectbox("Filter by intent", intents)
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 3 — My Offers (only this user's)
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab3:
+        st.markdown("## My Offer History")
+        st.markdown('<div class="info-box">Only your offers are shown here. Other users cannot see your offers.</div>', unsafe_allow_html=True)
 
-        filtered = df_hist.copy()
-        if sel_product != "All":
-            filtered = filtered[filtered["Product"] == sel_product]
-        if sel_intent != "All":
-            filtered = filtered[filtered["Intent"] == sel_intent]
+        my_rows = _my_offers(email)
 
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        if not my_rows:
+            st.markdown('<div class="info-box">You have not submitted any offers yet. Go to the <b>Make an Offer</b> tab to get started.</div>', unsafe_allow_html=True)
+        else:
+            df = pd.DataFrame(my_rows, columns=["Product","Quantity","Unit","Price","Intent","Status","Date"])
 
-        # Price chart
-        if len(filtered) > 1 and sel_product != "All":
-            st.markdown('<div class="section-label">Price trend for selected product</div>', unsafe_allow_html=True)
-            fig, ax = plt.subplots(figsize=(8, 3))
-            fig.patch.set_facecolor("#0d0f14")
-            ax.set_facecolor("#161a24")
-            ax.plot(
-                range(len(filtered)),
-                filtered["Price"].values,
-                color="#e8d5a3",
-                linewidth=2,
-                marker="o",
-                markersize=4
-            )
-            ax.set_xlabel("Offer #", color="#6b7280", fontsize=9)
-            ax.set_ylabel("Price (₹/kg)", color="#6b7280", fontsize=9)
-            ax.tick_params(colors="#6b7280")
-            for spine in ax.spines.values():
-                spine.set_edgecolor("#2a2f3e")
-            st.pyplot(fig)
-            plt.close()
+            # Color status
+            def status_badge(s):
+                colors = {
+                    "pending":       "🟡 Pending",
+                    "accepted":      "🟢 Accepted",
+                    "rejected":      "🔴 Rejected",
+                    "counter":       "🔵 Counter Offer",
+                }
+                return colors.get(s, s)
 
-    # ── Vendor Leaderboard ────────────────────────────────────────────────────
-    st.markdown("## Vendor Leaderboard")
-    st.markdown('<div class="section-label">Ranked by total interactions</div>', unsafe_allow_html=True)
+            df["Status"] = df["Status"].apply(status_badge)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-    vendors = _fetch_vendors()
+            # Stats
+            st.markdown('<div class="section-label">Summary</div>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Offers", len(df))
+            c2.metric("Avg Price (₹/kg)", f"{df['Price'].mean():.1f}")
+            c3.metric("Total Quantity (kg)", f"{df['Quantity'].sum():.0f}")
 
-    if not vendors:
-        st.markdown('<div class="info-box">No vendor data yet.</div>', unsafe_allow_html=True)
-    else:
-        df_v = pd.DataFrame(vendors, columns=["Vendor", "Total Orders", "Last Seen"])
-        df_v.index = range(1, len(df_v) + 1)
-        st.dataframe(df_v, use_container_width=True)
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 4 — Best Offers (AI-ranked, visible to all)
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab4:
+        st.markdown("## Best Offers (AI Ranked)")
+        st.markdown('<div class="info-box">The AI ranks all offers by profit, quantity, vendor reliability, and intent to find the best deal per product.</div>', unsafe_allow_html=True)
 
-    # ── Inventory Snapshot ────────────────────────────────────────────────────
-    st.markdown("## Inventory Snapshot")
-    st.markdown('<div class="section-label">Current stock levels (read-only)</div>', unsafe_allow_html=True)
+        best = get_best_offers()
 
-    inv = load_inventory()
-    if not inv:
-        st.markdown('<div class="info-box">Inventory file not found.</div>', unsafe_allow_html=True)
-    else:
-        inv_rows = [
-            {"Product": p.title(), "Stock (kg)": v.get("stock", 0), "Cost Price (₹/kg)": v.get("cost_price", 0)}
-            for p, v in inv.items()
-        ]
-        df_inv = pd.DataFrame(inv_rows)
-        st.dataframe(df_inv, use_container_width=True, hide_index=True)
+        if not best:
+            st.markdown('<div class="info-box">No ranked offers yet. Offers will appear here once processed.</div>', unsafe_allow_html=True)
+        else:
+            cols = st.columns(min(len(best), 4))
+            for i, offer in enumerate(best[:4]):
+                with cols[i]:
+                    st.metric(offer["product"].upper(), f"₹{offer['price']}/kg", f"Score {offer['score']}")
+
+            df_best = pd.DataFrame(best)
+            df_best.columns = [c.title() for c in df_best.columns]
+            st.dataframe(df_best, use_container_width=True, hide_index=True)
+
+        # Vendor leaderboard
+        st.markdown("## Vendor Leaderboard")
+        vendors = _fetch_vendors()
+        if vendors:
+            df_v = pd.DataFrame(vendors, columns=["Vendor","Total Orders","Last Seen"])
+            df_v.index = range(1, len(df_v)+1)
+            st.dataframe(df_v, use_container_width=True)

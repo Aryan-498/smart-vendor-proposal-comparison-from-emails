@@ -5,32 +5,24 @@ DATABASE_PATH = "data/vendor_history.db"
 
 
 def get_connection():
-    """Creates a connection to the SQLite database."""
-
     os.makedirs("data", exist_ok=True)
-
     conn = sqlite3.connect(DATABASE_PATH)
-
     return conn
 
 
 def create_tables():
-    """Create all required tables if they do not exist."""
-
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Vendor table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS vendors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE,
         total_orders INTEGER DEFAULT 0,
         last_seen TEXT
-    )
-    """)
+    )""")
 
-    # Offers table
+    # Added: source column ('email' or 'web'), user_email for web offers
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS offers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,18 +32,31 @@ def create_tables():
         price REAL,
         vendor TEXT,
         intent TEXT,
-        email_date TEXT
-    )
-    """)
+        email_date TEXT,
+        source TEXT DEFAULT 'email',
+        user_email TEXT DEFAULT NULL,
+        vendor_email TEXT DEFAULT NULL,
+        status TEXT DEFAULT 'pending'
+    )""")
 
-    # IMPROVEMENT: track processed email IDs to prevent duplicate inserts
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS processed_emails (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email_id TEXT UNIQUE,
         processed_at TEXT DEFAULT (datetime('now'))
-    )
-    """)
+    )""")
+
+    # Add missing columns to existing DBs gracefully
+    for col, definition in [
+        ("source",       "TEXT DEFAULT 'email'"),
+        ("user_email",   "TEXT DEFAULT NULL"),
+        ("vendor_email", "TEXT DEFAULT NULL"),
+        ("status",       "TEXT DEFAULT 'pending'"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
+        except Exception:
+            pass  # column already exists
 
     conn.commit()
     conn.close()

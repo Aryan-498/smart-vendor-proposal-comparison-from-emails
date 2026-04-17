@@ -5,3 +5,4 @@ config/credentials.json
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
+config/credential.json
