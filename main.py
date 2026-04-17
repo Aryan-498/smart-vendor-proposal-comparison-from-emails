@@ -72,7 +72,7 @@ def main():
     create_tables()
 
     log("Fetching emails...")
-    emails = fetch_emails("2024/01/01", "2026/12/31")
+    emails = fetch_emails("2026/03/01", "2026/03/31")
     log(f"Total emails fetched: {len(emails)}")
 
     for email in emails:
