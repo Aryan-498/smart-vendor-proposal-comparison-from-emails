@@ -302,7 +302,7 @@ def render():
             with st.spinner("Running pipeline..."):
                 try:
                     from gmail.email_reader import fetch_emails
-                    from ai.gemini_extractor import extract_offer
+                    from ai.gemini_extractor import extract_offers_batch
                     from database.offer_history import save_offer
                     from processing.normalization import normalize_offer
                     from inventory.inventory_manager import get_available_stock
@@ -310,30 +310,36 @@ def render():
                     from config.settings import AUTO_REPLY_ON_STOCK_EXCEEDED
                     import main as m
 
-                    emails = fetch_emails(start_d, end_d)
+                    JUNK_VENDORS = ["chess.com","github","instagram","facebook","twitter","linkedin","discord","youtube","tiktok"]
+
+                    all_emails  = fetch_emails(start_d, end_d)
                     saved = skipped = exceeded = 0
 
-                    for email in emails:
-                        sender  = email["sender"]
-                        body    = email["body"]
-
+                    # ── Step 1: filter out spam/automated/admin emails ────────
+                    valid_emails = []
+                    for email in all_emails:
+                        sender = email["sender"]
                         if m.is_automated_email(sender) or m.is_admin_email(sender):
                             skipped += 1
-                            continue
+                        else:
+                            # attach parsed sender_email for vendor_email field
+                            email["sender_email"] = m.extract_email_address(sender)
+                            valid_emails.append(email)
 
-                        offers = extract_offer(body)
-                        if not offers:
-                            skipped += 1
-                            continue
+                    st.info(f"Fetched {len(all_emails)} emails — {len(valid_emails)} valid, {skipped} skipped.")
 
+                    if not valid_emails:
+                        st.markdown('<div class="info-box">No valid emails to process.</div>', unsafe_allow_html=True)
+                    else:
+                        # ── Step 2: ONE Gemini call for all valid emails ───────
+                        offers = extract_offers_batch(valid_emails)
+
+                        # ── Step 3: process each extracted offer ──────────────
                         for offer in offers:
-                            if not offer.get("vendor"):
-                                offer["vendor"] = sender.split("<")[0].strip()
                             offer = normalize_offer(offer)
 
-                            # skip junk (chess.com etc.)
-                            vendor_l = offer.get("vendor","").lower()
-                            if any(j in vendor_l for j in ["chess.com","github","instagram","facebook","twitter"]):
+                            vendor_l = offer.get("vendor", "").lower()
+                            if any(j in vendor_l for j in JUNK_VENDORS):
                                 skipped += 1
                                 continue
 
@@ -344,8 +350,9 @@ def render():
                             if qty > avail:
                                 exceeded += 1
                                 if AUTO_REPLY_ON_STOCK_EXCEEDED:
-                                    ve = m.extract_email_address(sender)
-                                    send_stock_exceeded_reply(ve, ve, prod, qty, avail)
+                                    ve = offer.get("vendor_email", "")
+                                    if ve:
+                                        send_stock_exceeded_reply(ve, offer.get("vendor",""), prod, qty, avail)
                                 continue
 
                             try:
@@ -354,18 +361,20 @@ def render():
                             except Exception:
                                 skipped += 1
 
-                    st.markdown(
-                        f'<div class="success-box">✓ Done — <b>{saved}</b> saved, '
-                        f'<b>{exceeded}</b> exceeded stock, <b>{skipped}</b> skipped.</div>',
-                        unsafe_allow_html=True
-                    )
+                        st.markdown(
+                            f'<div class="success-box">✓ Done — <b>1 Gemini call</b> for '
+                            f'<b>{len(valid_emails)}</b> emails → '
+                            f'<b>{saved}</b> offers saved, '
+                            f'<b>{exceeded}</b> exceeded stock, '
+                            f'<b>{skipped}</b> skipped.</div>',
+                            unsafe_allow_html=True
+                        )
 
                 except RuntimeError as e:
                     st.markdown(f'<div class="danger-box">{e}<br><br>'
-                                f'<b>How to fix:</b> Run locally first, then run:<br>'
-                                f'<code>cat config/token.json | base64</code><br>'
-                                f'Copy the output and add it to Streamlit secrets as '
-                                f'<code>GOOGLE_TOKEN_B64 = "..."</code></div>',
+                                f'<b>How to fix:</b> Run locally first, then:<br>'
+                                f'<code>[Convert]::ToBase64String([System.IO.File]::ReadAllBytes("config\\token.json"))</code><br>'
+                                f'Add output as <code>GOOGLE_TOKEN_B64</code> in Streamlit secrets.</div>',
                                 unsafe_allow_html=True)
                 except Exception as e:
                     st.markdown(f'<div class="danger-box">Pipeline error: {e}</div>', unsafe_allow_html=True)
