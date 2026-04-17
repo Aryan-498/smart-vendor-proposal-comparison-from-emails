@@ -1,5 +1,6 @@
 config/token.json
 config/credentials.json
 .env
+.env.*
 __pycache__/
 *.pyc
