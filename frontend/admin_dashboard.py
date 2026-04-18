@@ -36,7 +36,7 @@ def _get_offers(start_date=None, end_date=None):
     if start_date and end_date:
         cursor.execute("""
             SELECT id, product, quantity, unit, price, vendor, vendor_email,
-                   intent, source, status, email_date
+                   intent, source, status, phone, address, email_date
             FROM offers
             WHERE date(email_date) BETWEEN date(?) AND date(?)
             ORDER BY id DESC
@@ -44,12 +44,12 @@ def _get_offers(start_date=None, end_date=None):
     else:
         cursor.execute("""
             SELECT id, product, quantity, unit, price, vendor, vendor_email,
-                   intent, source, status, email_date
+                   intent, source, status, phone, address, email_date
             FROM offers ORDER BY id DESC LIMIT 300
         """)
     rows = cursor.fetchall()
     cols = ["ID","Product","Qty","Unit","Price","Vendor","Vendor Email",
-            "Intent","Source","Status","Date"]
+            "Intent","Source","Status","Phone","Address","Date"]
     conn.close()
     return pd.DataFrame(rows, columns=cols)
 

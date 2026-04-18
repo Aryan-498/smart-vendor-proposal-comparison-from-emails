@@ -65,3 +65,19 @@ def create_tables():
 if __name__ == "__main__":
     create_tables()
     print("Database tables created successfully.")
+
+# Run this to add contact columns to existing DB
+def add_contact_columns():
+    conn = get_connection()
+    cursor = conn.cursor()
+    for col, defn in [
+        ("phone",   "TEXT DEFAULT NULL"),
+        ("address", "TEXT DEFAULT NULL"),
+        ("note",    "TEXT DEFAULT NULL"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE offers ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
