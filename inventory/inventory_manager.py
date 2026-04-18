@@ -104,3 +104,25 @@ def update_inventory(updates: dict):
     reload_inventory()
 
     return applied
+
+
+def deduct_stock(product: str, quantity: float) -> bool:
+    """
+    Feature: Accept offer — deduct quantity from stock when offer is accepted.
+    Returns True if deduction succeeded, False if insufficient stock.
+    """
+    product = product.lower().strip()
+    inventory = load_inventory()
+
+    if product not in inventory:
+        return False
+
+    current = inventory[product].get("stock", 0)
+
+    if quantity > current:
+        return False
+
+    inventory[product]["stock"] = current - quantity
+    save_inventory(inventory)
+    reload_inventory()
+    return True

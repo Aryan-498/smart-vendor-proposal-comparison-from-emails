@@ -1,21 +1,20 @@
 """
 Admin Dashboard — ADMIN_EMAIL only.
-Tabs:
-  1. Inventory — add / update / delete products
-  2. Offers DB — view all, filter by date, counter-offer, reject, delete
-  3. Vendors DB — view
-  4. Run Pipeline — fetch emails from Gmail
+Tabs: Inventory | Offers & Actions | Vendors | Analytics | Run Pipeline
 """
 
-import json, os
 import pandas as pd
 import streamlit as st
 
 from inventory.inventory_manager import (
-    load_inventory, update_inventory, save_inventory, reload_inventory
+    load_inventory, update_inventory, save_inventory,
+    reload_inventory, deduct_stock
 )
 from database.db_manager import get_connection
-from gmail.email_sender import send_counter_offer, send_rejection
+from gmail.email_sender import (
+    send_counter_offer, send_rejection,
+    send_acceptance, notify_user_status
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -36,7 +35,7 @@ def _get_offers(start_date=None, end_date=None):
     if start_date and end_date:
         cursor.execute("""
             SELECT id, product, quantity, unit, price, vendor, vendor_email,
-                   intent, source, status, phone, address, email_date
+                   intent, source, status, phone, address, user_email, email_date
             FROM offers
             WHERE date(email_date) BETWEEN date(?) AND date(?)
             ORDER BY id DESC
@@ -44,12 +43,12 @@ def _get_offers(start_date=None, end_date=None):
     else:
         cursor.execute("""
             SELECT id, product, quantity, unit, price, vendor, vendor_email,
-                   intent, source, status, phone, address, email_date
+                   intent, source, status, phone, address, user_email, email_date
             FROM offers ORDER BY id DESC LIMIT 300
         """)
     rows = cursor.fetchall()
     cols = ["ID","Product","Qty","Unit","Price","Vendor","Vendor Email",
-            "Intent","Source","Status","Phone","Address","Date"]
+            "Intent","Source","Status","Phone","Address","User Email","Date"]
     conn.close()
     return pd.DataFrame(rows, columns=cols)
 
@@ -80,14 +79,18 @@ def _get_vendors():
     return pd.DataFrame(rows, columns=cols)
 
 
-def _filter_chess_and_junk(df):
-    """Remove clearly non-vendor rows (chess.com, price=0, etc.)"""
-    junk_vendors = ["chess.com", "github.com", "instagram", "facebook",
-                    "twitter", "linkedin", "discord", "youtube", "reddit"]
+def _filter_junk(df):
+    junk = ["chess.com","github.com","instagram","facebook",
+            "twitter","linkedin","discord","youtube","reddit"]
     mask = df["Vendor"].str.lower().apply(
-        lambda v: not any(j in v for j in junk_vendors)
+        lambda v: not any(j in v for j in junk)
     )
     return df[mask & (df["Price"] > 0)]
+
+
+def _fmt_status(s):
+    return {"pending":"🟡 Pending","accepted":"🟢 Accepted",
+            "rejected":"🔴 Rejected","counter":"🔵 Counter"}.get(s, s)
 
 
 # ── main render ───────────────────────────────────────────────────────────────
@@ -97,7 +100,10 @@ def render():
     st.markdown('<div class="danger-box">⚠ You are logged in as <b>Admin</b>. Changes here are live.</div>',
                 unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📦 Inventory", "📋 Offers & Actions", "🏢 Vendors", "⚙ Run Pipeline"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📦 Inventory", "📋 Offers & Actions",
+        "🏢 Vendors", "📊 Analytics", "⚙ Run Pipeline"
+    ])
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 1 — Inventory
@@ -111,21 +117,21 @@ def render():
                      "Cost Price (₹/kg)": v.get("cost_price",0)} for p, v in inv.items()]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            # Update
             st.markdown('<div class="section-label">Update product</div>', unsafe_allow_html=True)
             sel = st.selectbox("Select", [p.title() for p in inv], key="upd_sel")
             sk  = sel.lower()
             c1, c2 = st.columns(2)
             with c1:
-                ns = st.number_input("New stock (kg)", 0.0, value=float(inv[sk].get("stock",0)), step=50.0, key="upd_s")
+                ns = st.number_input("New stock (kg)", 0.0,
+                                     value=float(inv[sk].get("stock",0)), step=50.0, key="upd_s")
             with c2:
-                nc = st.number_input("New cost price (₹/kg)", 0.0, value=float(inv[sk].get("cost_price",0)), step=1.0, key="upd_c")
+                nc = st.number_input("New cost price (₹/kg)", 0.0,
+                                     value=float(inv[sk].get("cost_price",0)), step=1.0, key="upd_c")
             if st.button("💾 Save", key="save_upd"):
                 update_inventory({sk: {"stock": ns, "cost_price": nc}})
                 st.markdown('<div class="success-box">✓ Updated.</div>', unsafe_allow_html=True)
                 st.rerun()
 
-            # Delete
             st.markdown('<div class="section-label">Remove product</div>', unsafe_allow_html=True)
             del_sel = st.selectbox("Product to remove", [p.title() for p in inv], key="del_sel")
             if st.checkbox(f"Confirm delete **{del_sel}**", key="del_chk"):
@@ -134,7 +140,6 @@ def render():
                     st.markdown('<div class="success-box">✓ Deleted.</div>', unsafe_allow_html=True)
                     st.rerun()
 
-        # Add new
         st.markdown('<div class="section-label">Add new product</div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1: new_p = st.text_input("Name", placeholder="barley", key="add_n")
@@ -150,130 +155,195 @@ def render():
                     st.warning("Already exists.")
                 else:
                     update_inventory({k: {"stock": add_s, "cost_price": add_c}})
-                    st.markdown(f'<div class="success-box">✓ Added {new_p.title()}.</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="success-box">✓ Added {new_p.title()}.</div>',
+                                unsafe_allow_html=True)
                     st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 2 — Offers + Counter / Reject actions
+    # TAB 2 — Offers & Actions (Accept / Counter / Reject)
     # ══════════════════════════════════════════════════════════════════════════
     with tab2:
         st.markdown("### All Offers")
 
-        # Date filter
         col1, col2, col3 = st.columns([2, 2, 1])
-        with col1:
-            start = st.date_input("From date", key="of_start")
-        with col2:
-            end   = st.date_input("To date", key="of_end")
-        with col3:
-            use_filter = st.checkbox("Apply filter", key="of_chk")
+        with col1: start = st.date_input("From date", key="of_start")
+        with col2: end   = st.date_input("To date",   key="of_end")
+        with col3: use_f = st.checkbox("Apply filter", key="of_chk")
 
-        if use_filter:
-            df = _get_offers(str(start), str(end))
-        else:
-            df = _get_offers()
+        df = _get_offers(str(start), str(end)) if use_f else _get_offers()
 
-        # Toggle junk filter
-        hide_junk = st.checkbox("Hide non-vendor rows (Chess.com, price=0, etc.)", value=True, key="hide_junk")
+        hide_junk = st.checkbox("Hide non-vendor rows", value=True, key="hide_junk")
         if hide_junk:
-            df = _filter_chess_and_junk(df)
+            df = _filter_junk(df)
 
         if df.empty:
             st.markdown('<div class="info-box">No offers found.</div>', unsafe_allow_html=True)
         else:
-            # Status color
-            def fmt_status(s):
-                return {"pending":"🟡 Pending","accepted":"🟢 Accepted",
-                        "rejected":"🔴 Rejected","counter":"🔵 Counter"}.get(s, s)
-            display_df = df.copy()
-            display_df["Status"] = display_df["Status"].apply(fmt_status)
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            display = df.copy()
+            display["Status"] = display["Status"].apply(_fmt_status)
+            st.dataframe(display, use_container_width=True, hide_index=True)
 
             st.markdown("---")
-            st.markdown("### ✉ Send Counter Offer or Rejection")
-            st.markdown('<div class="info-box">Select an offer ID from the table above. The email will be sent to the vendor\'s email address.</div>', unsafe_allow_html=True)
+            st.markdown("### ✉ Take Action on an Offer")
+            st.markdown('<div class="info-box">Select an offer ID. Email sent to vendor/user. Accepted offers automatically deduct stock.</div>',
+                        unsafe_allow_html=True)
 
-            offer_ids = df["ID"].tolist()
-            sel_id = st.selectbox("Select Offer ID", offer_ids, key="action_id")
-
+            sel_id  = st.selectbox("Select Offer ID", df["ID"].tolist(), key="action_id")
             sel_row = df[df["ID"] == sel_id].iloc[0]
+
+            # Info card
             st.markdown(f"""
             <div class="info-box">
             <b>Product:</b> {sel_row['Product'].title()} &nbsp;|&nbsp;
             <b>Qty:</b> {sel_row['Qty']} kg &nbsp;|&nbsp;
             <b>Price:</b> ₹{sel_row['Price']}/kg &nbsp;|&nbsp;
             <b>Vendor:</b> {sel_row['Vendor']} &nbsp;|&nbsp;
-            <b>Email:</b> {sel_row['Vendor Email'] or '(no email on file)'}
+            <b>Status:</b> {_fmt_status(sel_row['Status'])}<br>
+            <b>Phone:</b> {sel_row['Phone'] or '—'} &nbsp;|&nbsp;
+            <b>Address:</b> {sel_row['Address'] or '—'} &nbsp;|&nbsp;
+            <b>Source:</b> {sel_row['Source']}
             </div>
             """, unsafe_allow_html=True)
 
-            vendor_email_override = st.text_input(
-                "Vendor email (editable)",
-                value=str(sel_row["Vendor Email"]) if sel_row["Vendor Email"] else "",
+            # Editable email
+            vendor_email = st.text_input(
+                "Vendor / User email (editable)",
+                value=str(sel_row["User Email"] or sel_row["Vendor Email"] or ""),
                 key="v_email"
             )
 
-            action = st.radio("Action", ["Counter Offer", "Reject"], horizontal=True, key="action_radio")
+            # ── 3-way action ──────────────────────────────────────────────────
+            action = st.radio(
+                "Action", ["✅ Accept", "🔵 Counter Offer", "🔴 Reject"],
+                horizontal=True, key="action_radio"
+            )
 
-            if action == "Counter Offer":
+            # ── ACCEPT ────────────────────────────────────────────────────────
+            if action == "✅ Accept":
+                st.markdown('<div class="success-box">Accepting will mark the offer as accepted, deduct the quantity from inventory, and notify the vendor/user by email.</div>',
+                            unsafe_allow_html=True)
+
+                if st.button("✅ Confirm Accept", key="confirm_accept"):
+                    if not vendor_email:
+                        st.markdown('<div class="danger-box">No email found. Enter it above.</div>',
+                                    unsafe_allow_html=True)
+                    else:
+                        product  = sel_row["Product"].lower()
+                        quantity = float(sel_row["Qty"])
+                        price    = float(sel_row["Price"])
+
+                        # Deduct from inventory
+                        deducted = deduct_stock(product, quantity)
+
+                        if not deducted:
+                            st.markdown(
+                                f'<div class="danger-box">⚠ Insufficient stock to fulfil '
+                                f'{quantity} kg of {product.title()}. '
+                                f'Update inventory first.</div>',
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            # Mark accepted in DB
+                            _set_offer_status(sel_id, "accepted")
+
+                            # Notify vendor (email-sourced) or web user
+                            if sel_row["Source"] == "web" and sel_row["User Email"]:
+                                notify_user_status(
+                                    sel_row["User Email"], sel_row["Vendor"],
+                                    product, quantity, price, "accepted"
+                                )
+                            else:
+                                send_acceptance(
+                                    vendor_email, sel_row["Vendor"],
+                                    product, quantity, price
+                                )
+
+                            st.markdown(
+                                f'<div class="success-box">✓ Offer accepted! '
+                                f'<b>{quantity} kg</b> of <b>{product.title()}</b> '
+                                f'deducted from inventory. Notification sent to '
+                                f'<b>{vendor_email}</b>.</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.rerun()
+
+            # ── COUNTER ───────────────────────────────────────────────────────
+            elif action == "🔵 Counter Offer":
                 c1, c2 = st.columns(2)
                 with c1:
                     counter_price = st.number_input(
-                        "Your counter price (₹/kg)",
+                        "Counter price (₹/kg)",
                         min_value=0.1,
                         value=float(sel_row["Price"]) * 0.95,
-                        step=0.5,
-                        key="counter_p"
+                        step=0.5, key="counter_p"
                     )
                 with c2:
                     counter_note = st.text_input("Note (optional)", key="counter_note")
 
                 if st.button("📤 Send Counter Offer", key="send_counter"):
-                    if not vendor_email_override:
-                        st.markdown('<div class="danger-box">No vendor email found. Enter it above.</div>', unsafe_allow_html=True)
+                    if not vendor_email:
+                        st.markdown('<div class="danger-box">No email found.</div>',
+                                    unsafe_allow_html=True)
                     else:
                         ok = send_counter_offer(
-                            vendor_email=vendor_email_override,
-                            vendor_name=sel_row["Vendor"],
-                            product=sel_row["Product"],
-                            original_price=sel_row["Price"],
-                            counter_price=counter_price,
-                            quantity=sel_row["Qty"],
-                            note=counter_note
+                            vendor_email, sel_row["Vendor"],
+                            sel_row["Product"], sel_row["Price"],
+                            counter_price, sel_row["Qty"], counter_note
                         )
+                        # Also notify web user if applicable
+                        if sel_row["Source"] == "web" and sel_row["User Email"]:
+                            notify_user_status(
+                                sel_row["User Email"], sel_row["Vendor"],
+                                sel_row["Product"], sel_row["Qty"],
+                                sel_row["Price"], "counter",
+                                counter_price=counter_price
+                            )
                         if ok:
                             _set_offer_status(sel_id, "counter")
-                            st.markdown(f'<div class="success-box">✓ Counter offer sent to {vendor_email_override}. Offer marked as Counter.</div>', unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div class="success-box">✓ Counter offer sent to '
+                                f'{vendor_email}.</div>', unsafe_allow_html=True
+                            )
                             st.rerun()
                         else:
-                            st.markdown('<div class="danger-box">Failed to send email. Check Gmail credentials.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="danger-box">Failed to send. Check Gmail credentials.</div>',
+                                        unsafe_allow_html=True)
 
-            else:  # Reject
-                reason = st.text_input("Reason for rejection (optional)", key="rej_reason")
+            # ── REJECT ────────────────────────────────────────────────────────
+            else:
+                reason = st.text_input("Reason (optional)", key="rej_reason")
 
                 if st.button("🚫 Send Rejection", key="send_reject"):
-                    if not vendor_email_override:
-                        st.markdown('<div class="danger-box">No vendor email found. Enter it above.</div>', unsafe_allow_html=True)
+                    if not vendor_email:
+                        st.markdown('<div class="danger-box">No email found.</div>',
+                                    unsafe_allow_html=True)
                     else:
-                        ok = send_rejection(
-                            vendor_email=vendor_email_override,
-                            vendor_name=sel_row["Vendor"],
-                            product=sel_row["Product"],
-                            reason=reason
-                        )
+                        ok = send_rejection(vendor_email, sel_row["Vendor"],
+                                            sel_row["Product"], reason)
+                        if sel_row["Source"] == "web" and sel_row["User Email"]:
+                            notify_user_status(
+                                sel_row["User Email"], sel_row["Vendor"],
+                                sel_row["Product"], sel_row["Qty"],
+                                sel_row["Price"], "rejected", reason=reason
+                            )
                         if ok:
                             _set_offer_status(sel_id, "rejected")
-                            st.markdown(f'<div class="success-box">✓ Rejection sent to {vendor_email_override}. Offer marked as Rejected.</div>', unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div class="success-box">✓ Rejection sent to '
+                                f'{vendor_email}.</div>', unsafe_allow_html=True
+                            )
                             st.rerun()
                         else:
-                            st.markdown('<div class="danger-box">Failed to send email. Check Gmail credentials.</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="danger-box">Failed to send. Check Gmail credentials.</div>',
+                                        unsafe_allow_html=True)
 
             st.markdown("---")
             st.markdown("### 🗑 Delete Offer")
-            del_id = st.number_input("Offer ID to delete", min_value=1, step=1, key="del_off")
+            del_id = st.number_input("Offer ID", min_value=1, step=1, key="del_off")
             if st.button("Delete", key="del_off_btn"):
                 _delete_offer(int(del_id))
-                st.markdown(f'<div class="success-box">✓ Offer {del_id} deleted.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="success-box">✓ Offer {del_id} deleted.</div>',
+                            unsafe_allow_html=True)
                 st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -288,11 +358,19 @@ def render():
             st.dataframe(df_v, use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 4 — Run Pipeline
+    # TAB 4 — Analytics
     # ══════════════════════════════════════════════════════════════════════════
     with tab4:
+        from frontend.analytics import render as render_analytics
+        render_analytics()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 5 — Run Pipeline
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab5:
         st.markdown("### Run Email Processing Pipeline")
-        st.markdown('<div class="info-box">Fetches new emails from Gmail, extracts offers via Gemini, saves to DB. Requires Gmail credentials to be configured in secrets.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-box">Fetches new emails from Gmail, extracts offers via Gemini, saves to DB.</div>',
+                    unsafe_allow_html=True)
 
         c1, c2 = st.columns(2)
         with c1: start_d = st.text_input("Start (YYYY/MM/DD)", "2024/01/01", key="pipe_s")
@@ -310,36 +388,32 @@ def render():
                     from config.settings import AUTO_REPLY_ON_STOCK_EXCEEDED
                     import main as m
 
-                    JUNK_VENDORS = ["chess.com","github","instagram","facebook","twitter","linkedin","discord","youtube","tiktok"]
+                    JUNK = ["chess.com","github","instagram","facebook",
+                            "twitter","linkedin","discord","youtube","tiktok"]
 
-                    all_emails  = fetch_emails(start_d, end_d)
+                    all_emails = fetch_emails(start_d, end_d)
                     saved = skipped = exceeded = 0
 
-                    # ── Step 1: filter out spam/automated/admin emails ────────
                     valid_emails = []
                     for email in all_emails:
                         sender = email["sender"]
                         if m.is_automated_email(sender) or m.is_admin_email(sender):
                             skipped += 1
                         else:
-                            # attach parsed sender_email for vendor_email field
                             email["sender_email"] = m.extract_email_address(sender)
                             valid_emails.append(email)
 
-                    st.info(f"Fetched {len(all_emails)} emails — {len(valid_emails)} valid, {skipped} skipped.")
+                    st.info(f"Fetched {len(all_emails)} — {len(valid_emails)} valid, {skipped} skipped.")
 
                     if not valid_emails:
-                        st.markdown('<div class="info-box">No valid emails to process.</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="info-box">No valid emails.</div>',
+                                    unsafe_allow_html=True)
                     else:
-                        # ── Step 2: ONE Gemini call for all valid emails ───────
                         offers = extract_offers_batch(valid_emails)
 
-                        # ── Step 3: process each extracted offer ──────────────
                         for offer in offers:
                             offer = normalize_offer(offer)
-
-                            vendor_l = offer.get("vendor", "").lower()
-                            if any(j in vendor_l for j in JUNK_VENDORS):
+                            if any(j in offer.get("vendor","").lower() for j in JUNK):
                                 skipped += 1
                                 continue
 
@@ -350,9 +424,10 @@ def render():
                             if qty > avail:
                                 exceeded += 1
                                 if AUTO_REPLY_ON_STOCK_EXCEEDED:
-                                    ve = offer.get("vendor_email", "")
+                                    ve = offer.get("vendor_email","")
                                     if ve:
-                                        send_stock_exceeded_reply(ve, offer.get("vendor",""), prod, qty, avail)
+                                        send_stock_exceeded_reply(
+                                            ve, offer.get("vendor",""), prod, qty, avail)
                                 continue
 
                             try:
@@ -362,19 +437,18 @@ def render():
                                 skipped += 1
 
                         st.markdown(
-                            f'<div class="success-box">✓ Done — <b>1 Gemini call</b> for '
-                            f'<b>{len(valid_emails)}</b> emails → '
-                            f'<b>{saved}</b> offers saved, '
-                            f'<b>{exceeded}</b> exceeded stock, '
+                            f'<div class="success-box">✓ Done — <b>1 Gemini call</b> · '
+                            f'<b>{saved}</b> saved · <b>{exceeded}</b> exceeded stock · '
                             f'<b>{skipped}</b> skipped.</div>',
                             unsafe_allow_html=True
                         )
 
                 except RuntimeError as e:
-                    st.markdown(f'<div class="danger-box">{e}<br><br>'
-                                f'<b>How to fix:</b> Run locally first, then:<br>'
-                                f'<code>[Convert]::ToBase64String([System.IO.File]::ReadAllBytes("config\\token.json"))</code><br>'
-                                f'Add output as <code>GOOGLE_TOKEN_B64</code> in Streamlit secrets.</div>',
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="danger-box">{e}<br><br>'
+                        f'Add <code>GOOGLE_TOKEN_B64</code> to Streamlit secrets.</div>',
+                        unsafe_allow_html=True
+                    )
                 except Exception as e:
-                    st.markdown(f'<div class="danger-box">Pipeline error: {e}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="danger-box">Pipeline error: {e}</div>',
+                                unsafe_allow_html=True)
