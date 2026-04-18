@@ -1,5 +1,5 @@
 from gmail.email_reader import fetch_emails
-from ai.gemini_extractor import extract_offer
+from ai.gemini_extractor import extract_offers_batch
 from database.offer_history import save_offer
 from database.db_manager import create_tables
 from processing.normalization import normalize_offer
@@ -13,50 +13,19 @@ from config.settings import (
     ADMIN_UPDATE_SUBJECT_KEYWORD
 )
 
-AUTOMATED_KEYWORDS = [
-    "no-reply",
-    "noreply",
-    "notification",
-    "newsletter",
-    "updates"
-]
-
-SOCIAL_DOMAINS = [
-    "instagram",
-    "facebook",
-    "linkedin",
-    "twitter",
-    "x.com",
-    "reddit",
-    "discord",
-    "youtube",
-    "tiktok",
-    "chess.com",
-    "github.com"
-]
+AUTOMATED_KEYWORDS = ["no-reply", "noreply", "notification", "newsletter", "updates"]
+SOCIAL_DOMAINS     = ["instagram", "facebook", "linkedin", "twitter", "x.com",
+                      "reddit", "discord", "youtube", "tiktok", "chess.com", "github.com"]
+JUNK_VENDORS       = ["chess.com", "github", "instagram", "facebook",
+                      "twitter", "linkedin", "discord", "youtube", "tiktok"]
 
 
 def is_automated_email(sender):
-
-    sender_lower = sender.lower()
-
-    for keyword in AUTOMATED_KEYWORDS:
-        if keyword in sender_lower:
-            return True
-
-    for domain in SOCIAL_DOMAINS:
-        if domain in sender_lower:
-            return True
-
-    return False
+    s = sender.lower()
+    return any(k in s for k in AUTOMATED_KEYWORDS) or any(d in s for d in SOCIAL_DOMAINS)
 
 
 def extract_email_address(sender: str) -> str:
-    """
-    Parse the raw email address from a sender string.
-    e.g. 'John Doe <john@example.com>' → 'john@example.com'
-    e.g. 'john@example.com' → 'john@example.com'
-    """
     if "<" in sender and ">" in sender:
         return sender.split("<")[1].split(">")[0].strip().lower()
     return sender.strip().lower()
@@ -67,87 +36,75 @@ def is_admin_email(sender: str) -> bool:
 
 
 def main():
-
-    # Ensure all DB tables exist before anything runs
     create_tables()
 
     log("Fetching emails...")
-    emails = fetch_emails("2026/03/01", "2026/03/31")
-    log(f"Total emails fetched: {len(emails)}")
+    all_emails = fetch_emails("2024/01/01", "2026/12/31")
+    log(f"Total emails fetched: {len(all_emails)}")
 
-    for email in emails:
+    # ── Step 1: separate admin emails and valid vendor emails ─────────────────
+    valid_emails = []
 
+    for email in all_emails:
         sender  = email["sender"]
         subject = email.get("subject", "")
         body    = email["body"]
 
-        # ── Feature 2: Admin inventory update ────────────────────────────────
         if is_admin_email(sender):
             if ADMIN_UPDATE_SUBJECT_KEYWORD.lower() in subject.lower():
-                handle_admin_inventory_email(
-                    extract_email_address(sender),
-                    subject,
-                    body
-                )
-                continue  # don't process admin emails as vendor offers
+                handle_admin_inventory_email(extract_email_address(sender), subject, body)
             else:
-                log(f"Email from admin ({sender}) — subject doesn't match update keyword, skipping.")
-                continue
+                log(f"Admin email skipped (subject mismatch): {subject}")
+            continue
 
-        # ── Spam / automated filter ───────────────────────────────────────────
         if is_automated_email(sender):
             log(f"Skipping automated email from: {sender}")
             continue
 
-        log(f"Processing email from: {sender}")
+        email["sender_email"] = extract_email_address(sender)
+        valid_emails.append(email)
 
-        offers = extract_offer(body)
+    log(f"Valid vendor emails to process: {len(valid_emails)}")
 
-        if not offers:
-            log("No offers found in email.")
+    if not valid_emails:
+        log("No valid emails to send to Gemini.")
+        return
+
+    # ── Step 2: ONE Gemini call for ALL valid emails ──────────────────────────
+    offers = extract_offers_batch(valid_emails)
+
+    log(f"Total offers extracted: {len(offers)}")
+
+    # ── Step 3: validate and save each offer ──────────────────────────────────
+    for offer in offers:
+        offer = normalize_offer(offer)
+
+        vendor_l = offer.get("vendor", "").lower()
+        if any(j in vendor_l for j in JUNK_VENDORS):
+            log(f"Skipping junk vendor: {offer.get('vendor')}")
             continue
 
-        for offer in offers:
+        product  = offer.get("product")
+        quantity = offer.get("quantity") or 0
+        available = get_available_stock(product)
 
-            # Fallback vendor name from sender
-            if not offer.get("vendor"):
-                offer["vendor"] = sender.split("<")[0].strip()
+        if quantity > available:
+            log(f"Order exceeds stock — product='{product}', requested={quantity}, available={available}")
+            if AUTO_REPLY_ON_STOCK_EXCEEDED:
+                ve = offer.get("vendor_email", "")
+                vn = offer.get("vendor", ve)
+                if ve:
+                    send_stock_exceeded_reply(ve, vn, product, quantity, available)
+            continue
 
-            offer = normalize_offer(offer)
+        try:
+            save_offer(offer)
+            log(f"Saved offer: {offer}")
+        except Exception as e:
+            log(f"Failed to save offer: {e}")
 
-            product   = offer.get("product")
-            quantity  = offer.get("quantity") or 0
-            available = get_available_stock(product)
-
-            # ── Feature 1: Auto-reply when order exceeds stock ────────────────
-            if quantity > available:
-                log(
-                    f"Order exceeds stock — product='{product}', "
-                    f"requested={quantity}, available={available}"
-                )
-
-                if AUTO_REPLY_ON_STOCK_EXCEEDED:
-                    vendor_email = extract_email_address(sender)
-                    vendor_name  = sender.split("<")[0].strip() or vendor_email
-                    send_stock_exceeded_reply(
-                        vendor_email,
-                        vendor_name,
-                        product,
-                        quantity,
-                        available
-                    )
-
-                # Do NOT save this offer — it can't be fulfilled
-                continue
-
-            # Normal path — save valid offer
-            try:
-                save_offer(offer)
-                log(f"Saved offer: {offer}")
-            except Exception as e:
-                log(f"Failed to save offer: {e}")
-
-        print("-" * 50)
+    print("-" * 50)
+    log("Pipeline complete.")
 
 
 if __name__ == "__main__":
