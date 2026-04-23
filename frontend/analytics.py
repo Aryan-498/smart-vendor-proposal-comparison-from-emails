@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import streamlit as st
 from database.db_manager import get_connection
 
 # ── shared chart style ────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ def _style_fig(fig, ax):
     return fig, ax
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def _fetch_all_offers():
     conn = get_connection()
     cursor = conn.cursor()
@@ -206,3 +208,4 @@ def render():
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
+    

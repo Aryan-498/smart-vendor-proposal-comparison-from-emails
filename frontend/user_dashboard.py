@@ -18,6 +18,59 @@ from processing.normalization import normalize_product
 from config.settings import ADMIN_EMAIL
 
 
+# ── cached read functions (ttl=30s — auto-invalidated after writes) ────────────
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_inventory():
+    """Cache inventory reads — refreshes every 30s or on manual refresh."""
+    return load_inventory()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_my_offers(user_email: str):
+    """Cache per-user offer reads."""
+    create_tables()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, product, quantity, unit, price, counter_price,
+               user_counter_price, status, user_response, phone, address,
+               email_date
+        FROM offers WHERE user_email=? ORDER BY id DESC
+    """, (user_email,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_pending_counter_count(user_email: str) -> int:
+    """Cache pending counter count — refreshes every 30s."""
+    create_tables()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COUNT(*) FROM offers
+        WHERE user_email=? AND status='counter' AND user_response IS NULL
+    """, (user_email,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_is_blacklisted(email: str) -> bool:
+    """Cache blacklist check."""
+    return is_blacklisted(email)
+
+
+def _invalidate_user_cache(user_email: str):
+    """Call after any write to clear cached data for this user."""
+    _cached_my_offers.clear()
+    _cached_pending_counter_count.clear()
+    _cached_inventory.clear()
+
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _save_web_offer(product, quantity, price, user_email, user_name,
@@ -44,21 +97,11 @@ def _save_web_offer(product, quantity, price, user_email, user_name,
             (user_name,))
     conn.commit()
     conn.close()
+    _invalidate_user_cache(user_email)
 
 
 def _my_offers(user_email):
-    create_tables()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, product, quantity, unit, price, counter_price,
-               user_counter_price, status, user_response, phone, address,
-               email_date
-        FROM offers WHERE user_email=? ORDER BY id DESC
-    """, (user_email,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+    return _cached_my_offers(user_email)
 
 
 def _set_user_response(offer_id, response):
@@ -83,16 +126,7 @@ def _save_user_counter(offer_id, user_counter_price):
 
 
 def _pending_counter_count(user_email):
-    create_tables()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT COUNT(*) FROM offers
-        WHERE user_email=? AND status='counter' AND user_response IS NULL
-    """, (user_email,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    return _cached_pending_counter_count(user_email)
 
 
 # ── main render ───────────────────────────────────────────────────────────────
@@ -102,7 +136,7 @@ def render(user: dict):
     email = user["email"]
 
     # Blacklist check
-    if is_blacklisted(email):
+    if _cached_is_blacklisted(email):
         st.markdown(
             '<div class="danger-box">⛔ Your account has been restricted from '
             'submitting offers. Please contact the admin for more information.</div>',
@@ -130,7 +164,7 @@ def render(user: dict):
         st.markdown("## Current Inventory")
         st.markdown('<div class="info-box">Live inventory. Submit offers only for quantities within available stock and above the minimum order.</div>',
                     unsafe_allow_html=True)
-        inv = load_inventory()
+        inv = _cached_inventory()
         if not inv:
             st.markdown('<div class="info-box">No inventory data found.</div>', unsafe_allow_html=True)
         else:
@@ -311,6 +345,7 @@ def render(user: dict):
                                         unsafe_allow_html=True)
                         else:
                             _set_user_response(offer_id, "accepted")
+                            _invalidate_user_cache(email)
                             try:
                                 from gmail.email_sender import notify_admin_counter_response
                                 notify_admin_counter_response(
@@ -327,6 +362,7 @@ def render(user: dict):
                 with col_b:
                     if st.button("❌ Decline", key=f"decline_{offer_id}", use_container_width=True):
                         _set_user_response(offer_id, "declined")
+                        _invalidate_user_cache(email)
                         try:
                             from gmail.email_sender import notify_admin_counter_response
                             notify_admin_counter_response(
@@ -351,6 +387,7 @@ def render(user: dict):
                         st.caption(f"Total at this price: ₹{user_cp * quantity:,.0f}")
                         if st.button("📤 Send Counter", key=f"send_ucp_{offer_id}"):
                             _save_user_counter(offer_id, user_cp)
+                            _invalidate_user_cache(email)
                             try:
                                 from gmail.email_sender import notify_admin_user_counter
                                 notify_admin_user_counter(

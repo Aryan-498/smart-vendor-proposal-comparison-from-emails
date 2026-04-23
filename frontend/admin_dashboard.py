@@ -22,6 +22,54 @@ from gmail.email_sender import (
 from config.settings import ADMIN_EMAIL
 
 
+# ── cached read helpers ───────────────────────────────────────────────────────
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_offers(start_date=None, end_date=None):
+    """Cache offer table reads — 30s TTL."""
+    return _get_offers(start_date, end_date)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_vendors():
+    """Cache vendor table reads."""
+    return _get_vendors()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_blacklist():
+    """Cache blacklist reads."""
+    return get_blacklist()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_inventory():
+    """Cache inventory reads."""
+    return load_inventory()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_low_stock():
+    """Cache low stock check."""
+    return check_low_stock_alerts()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_price_history():
+    """Cache price history reads."""
+    return _price_history()
+
+
+def _invalidate_admin_cache():
+    """Clear all admin caches after any write."""
+    _cached_offers.clear()
+    _cached_vendors.clear()
+    _cached_blacklist.clear()
+    _cached_inventory.clear()
+    _cached_low_stock.clear()
+    _cached_price_history.clear()
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _get_offers(start_date=None, end_date=None):
@@ -139,7 +187,7 @@ def render():
                 unsafe_allow_html=True)
 
     # Low stock alert banner
-    alerts = check_low_stock_alerts()
+    alerts = _cached_low_stock()
     if alerts:
         names = ", ".join(a["product"].title() for a in alerts)
         st.markdown(
@@ -157,7 +205,7 @@ def render():
     # ══════════════════════════════════════════════════════════════════════════
     with tab1:
         st.markdown("### Current Inventory")
-        inv = load_inventory()
+        inv = _cached_inventory()
 
         if inv:
             rows = [{"Product": p.title(),
@@ -189,6 +237,7 @@ def render():
             if st.button("💾 Save", key="save_upd"):
                 update_inventory({sk: {"stock": ns, "cost_price": nc,
                                        "min_order": nm, "low_stock_threshold": nt}})
+                _invalidate_admin_cache()
                 st.markdown('<div class="success-box">✓ Updated.</div>', unsafe_allow_html=True)
                 st.rerun()
 
@@ -219,6 +268,7 @@ def render():
                 else:
                     update_inventory({k: {"stock": add_s, "cost_price": add_c,
                                           "min_order": add_m, "low_stock_threshold": add_t}})
+                    _invalidate_admin_cache()
                     st.markdown(f'<div class="success-box">✓ Added {new_p.title()}.</div>',
                                 unsafe_allow_html=True)
                     st.rerun()
@@ -367,6 +417,7 @@ def render():
                                     unsafe_allow_html=True)
                     else:
                         _set_status(sel_id, "accepted")
+                        _invalidate_admin_cache()
                         if vendor_email:
                             try:
                                 if sel_row["Source"] == "web":
@@ -407,6 +458,7 @@ def render():
                             pass
                     if ok:
                         _set_status(sel_id, "counter")
+                        _invalidate_admin_cache()
                         _save_counter_price(sel_id, cp)
                         st.markdown(f'<div class="success-box">✓ Counter sent.</div>',
                                     unsafe_allow_html=True)
@@ -425,6 +477,7 @@ def render():
                         except Exception:
                             pass
                     _set_status(sel_id, "rejected")
+                    _invalidate_admin_cache()
                     st.markdown('<div class="success-box">✓ Rejected.</div>',
                                 unsafe_allow_html=True)
                     st.rerun()
@@ -441,7 +494,7 @@ def render():
     # ══════════════════════════════════════════════════════════════════════════
     with tab3:
         st.markdown("### All Vendors")
-        df_v = _get_vendors()
+        df_v = _cached_vendors()
         if not df_v.empty:
             st.dataframe(df_v, use_container_width=True, hide_index=True)
 
@@ -450,7 +503,7 @@ def render():
         st.markdown('<div class="info-box">Blacklisted emails cannot submit offers via the website.</div>',
                     unsafe_allow_html=True)
 
-        bl = get_blacklist()
+        bl = _cached_blacklist()
         if bl:
             bl_df = pd.DataFrame(bl, columns=["Email","Reason","Added At"])
             st.dataframe(bl_df, use_container_width=True, hide_index=True)
@@ -473,6 +526,7 @@ def render():
         rm_email = st.text_input("Email to remove", key="bl_rm")
         if st.button("✅ Remove", key="bl_rm_btn"):
             remove_from_blacklist(rm_email.strip())
+            _invalidate_admin_cache()
             st.markdown(f'<div class="success-box">✓ {rm_email} removed.</div>',
                         unsafe_allow_html=True)
             st.rerun()
@@ -490,7 +544,7 @@ def render():
         st.markdown('<div class="info-box">Average accepted price per product tracked weekly. Shows procurement price trends over time.</div>',
                     unsafe_allow_html=True)
 
-        ph_df = _price_history()
+        ph_df = _cached_price_history()
 
         if ph_df.empty:
             st.markdown('<div class="info-box">No accepted offers yet to show price history.</div>',
