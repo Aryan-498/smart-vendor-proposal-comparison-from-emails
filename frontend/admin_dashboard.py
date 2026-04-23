@@ -225,20 +225,45 @@ def render():
             st.markdown('<div class="section-label">Update product</div>', unsafe_allow_html=True)
             sel = st.selectbox("Select", [p.title() for p in inv], key="upd_sel")
             sk  = sel.lower()
+
+            # Show current values as a quick reference
+            cur = inv.get(sk, {})
+            st.markdown(f"""
+            <div class="info-box" style="font-size:0.82rem;padding:10px 14px;margin-bottom:8px;">
+            Current — Stock: <b>{cur.get('stock',0)} kg</b> &nbsp;|&nbsp;
+            Cost: <b>₹{cur.get('cost_price',0)}/kg</b> &nbsp;|&nbsp;
+            Min Order: <b>{cur.get('min_order',1)} kg</b> &nbsp;|&nbsp;
+            Alert Below: <b>{cur.get('low_stock_threshold',100)} kg</b>
+            </div>
+            """, unsafe_allow_html=True)
+
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                ns = st.number_input("Stock (kg)", 0.0, value=float(inv[sk].get("stock",0)), step=50.0, key="upd_s")
+                # Key includes product name — forces fresh widget on product switch
+                ns = st.number_input("Stock (kg)", 0.0,
+                                     value=float(cur.get("stock", 0)),
+                                     step=50.0, key=f"upd_s_{sk}")
             with c2:
-                nc = st.number_input("Cost price (₹/kg)", 0.0, value=float(inv[sk].get("cost_price",0)), step=1.0, key="upd_c")
+                nc = st.number_input("Cost price (₹/kg)", 0.0,
+                                     value=float(cur.get("cost_price", 0)),
+                                     step=1.0, key=f"upd_c_{sk}")
             with c3:
-                nm = st.number_input("Min order (kg)", 0.0, value=float(inv[sk].get("min_order",1)), step=10.0, key="upd_m")
+                nm = st.number_input("Min order (kg)", 0.0,
+                                     value=float(cur.get("min_order", 1)),
+                                     step=10.0, key=f"upd_m_{sk}")
             with c4:
-                nt = st.number_input("Alert below (kg)", 0.0, value=float(inv[sk].get("low_stock_threshold",100)), step=10.0, key="upd_t")
+                nt = st.number_input("Alert below (kg)", 0.0,
+                                     value=float(cur.get("low_stock_threshold", 100)),
+                                     step=10.0, key=f"upd_t_{sk}")
+
             if st.button("💾 Save", key="save_upd"):
                 update_inventory({sk: {"stock": ns, "cost_price": nc,
                                        "min_order": nm, "low_stock_threshold": nt}})
                 _invalidate_admin_cache()
-                st.markdown('<div class="success-box">✓ Updated.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="success-box">✓ <b>{sel}</b> updated — '
+                            f'Stock: {ns} kg, Cost: ₹{nc}/kg, '
+                            f'Min Order: {nm} kg, Alert: {nt} kg</div>',
+                            unsafe_allow_html=True)
                 st.rerun()
 
             st.markdown('<div class="section-label">Remove product</div>', unsafe_allow_html=True)
