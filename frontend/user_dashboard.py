@@ -249,25 +249,39 @@ def render(user: dict):
 
                 with col_a:
                     if st.button("✅ Accept", key=f"accept_{offer_id}", use_container_width=True):
-                        _set_user_response(offer_id, "accepted")
+                        from inventory.inventory_manager import deduct_stock
 
-                        # Notify admin
-                        try:
-                            from gmail.email_sender import notify_admin_counter_response
-                            notify_admin_counter_response(
-                                ADMIN_EMAIL, name, email,
-                                product, quantity, counter_price, "accepted"
+                        # Deduct stock first — check availability
+                        deducted = deduct_stock(product, quantity)
+
+                        if not deducted:
+                            st.markdown(
+                                f'<div class="danger-box">⚠ Sorry — insufficient stock to '
+                                f'fulfil <b>{quantity} kg</b> of <b>{product.title()}</b> '
+                                f'right now. Please contact us directly.</div>',
+                                unsafe_allow_html=True
                             )
-                        except Exception as e:
-                            pass  # don't block UI if email fails
+                        else:
+                            _set_user_response(offer_id, "accepted")
 
-                        st.markdown(
-                            f'<div class="success-box">✓ You accepted the counter offer of '
-                            f'<b>₹{counter_price}/kg</b> for <b>{product.title()}</b>. '
-                            f'The admin has been notified.</div>',
-                            unsafe_allow_html=True
-                        )
-                        st.rerun()
+                            # Notify admin
+                            try:
+                                from gmail.email_sender import notify_admin_counter_response
+                                notify_admin_counter_response(
+                                    ADMIN_EMAIL, name, email,
+                                    product, quantity, counter_price, "accepted"
+                                )
+                            except Exception:
+                                pass  # don't block UI if email fails
+
+                            st.markdown(
+                                f'<div class="success-box">✓ You accepted the counter offer of '
+                                f'<b>₹{counter_price}/kg</b> for <b>{product.title()}</b>. '
+                                f'<b>{quantity} kg</b> has been reserved from inventory. '
+                                f'The admin has been notified.</div>',
+                                unsafe_allow_html=True
+                            )
+                            st.rerun()
 
                 with col_b:
                     if st.button("❌ Decline", key=f"decline_{offer_id}", use_container_width=True):
