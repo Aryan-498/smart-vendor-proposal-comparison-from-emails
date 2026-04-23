@@ -219,6 +219,9 @@ def render(user: dict):
                 offer_id, product, quantity, unit, orig_price, counter_price, \
                     status, user_response, phone, address, date = row
 
+                orig_total    = orig_price * quantity
+                counter_total = counter_price * quantity if counter_price else 0
+
                 st.markdown(f"""
                 <div style="background:var(--card-bg,#161a24);border:1px solid #7c9cbf;
                      border-left:4px solid #7c9cbf;border-radius:10px;
@@ -326,11 +329,14 @@ def render(user: dict):
             offer_id, product, quantity, unit, orig_price, counter_price, \
                 status, user_response, phone, address, date = row
 
+            effective_price = counter_price if counter_price else orig_price
+            total = effective_price * quantity
             display_rows.append({
                 "Product":       product.title(),
                 "Qty (kg)":      quantity,
                 "Your Price":    f"₹{orig_price}/kg",
                 "Counter Price": f"₹{counter_price}/kg" if counter_price else "—",
+                "Total (₹)":     f"₹{total:,.0f}",
                 "Status":        fmt_status(row),
                 "Phone":         phone or "—",
                 "Date":          date,

@@ -189,6 +189,16 @@ def render():
         else:
             display = df.copy()
             display["Status"] = display["Status"].apply(_fmt_status)
+            # Add total price column — use counter_price if set, else offer price
+            if "Counter Price" in display.columns:
+                display["Total (₹)"] = display.apply(
+                    lambda r: f"₹{r['Counter Price'] * r['Qty']:,.0f}"
+                    if r.get("Counter Price") else f"₹{r['Price'] * r['Qty']:,.0f}", axis=1
+                )
+            else:
+                display["Total (₹)"] = display.apply(
+                    lambda r: f"₹{r['Price'] * r['Qty']:,.0f}", axis=1
+                )
             st.dataframe(display, use_container_width=True, hide_index=True)
 
             st.markdown("---")
@@ -200,11 +210,13 @@ def render():
             sel_row = df[df["ID"] == sel_id].iloc[0]
 
             # Info card
+            total = sel_row["Price"] * sel_row["Qty"]
             st.markdown(f"""
             <div class="info-box">
             <b>Product:</b> {sel_row['Product'].title()} &nbsp;|&nbsp;
             <b>Qty:</b> {sel_row['Qty']} kg &nbsp;|&nbsp;
             <b>Price:</b> ₹{sel_row['Price']}/kg &nbsp;|&nbsp;
+            <b>Total:</b> ₹{total:,.0f} &nbsp;|&nbsp;
             <b>Vendor:</b> {sel_row['Vendor']} &nbsp;|&nbsp;
             <b>Status:</b> {_fmt_status(sel_row['Status'])}<br>
             <b>Phone:</b> {sel_row['Phone'] or '—'} &nbsp;|&nbsp;
