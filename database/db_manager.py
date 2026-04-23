@@ -19,10 +19,10 @@ def create_tables():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE,
         total_orders INTEGER DEFAULT 0,
-        last_seen TEXT
+        last_seen TEXT,
+        blacklisted INTEGER DEFAULT 0
     )""")
 
-    # Added: source column ('email' or 'web'), user_email for web offers
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS offers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +36,13 @@ def create_tables():
         source TEXT DEFAULT 'email',
         user_email TEXT DEFAULT NULL,
         vendor_email TEXT DEFAULT NULL,
-        status TEXT DEFAULT 'pending'
+        status TEXT DEFAULT 'pending',
+        phone TEXT DEFAULT NULL,
+        address TEXT DEFAULT NULL,
+        note TEXT DEFAULT NULL,
+        counter_price REAL DEFAULT NULL,
+        user_response TEXT DEFAULT NULL,
+        user_counter_price REAL DEFAULT NULL
     )""")
 
     cursor.execute("""
@@ -46,18 +52,85 @@ def create_tables():
         processed_at TEXT DEFAULT (datetime('now'))
     )""")
 
-    # Add missing columns to existing DBs gracefully
-    for col, definition in [
-        ("source",       "TEXT DEFAULT 'email'"),
-        ("user_email",   "TEXT DEFAULT NULL"),
-        ("vendor_email", "TEXT DEFAULT NULL"),
-        ("status",       "TEXT DEFAULT 'pending'"),
+    # Vendor blacklist table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS blacklist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE,
+        reason TEXT,
+        added_at TEXT DEFAULT (datetime('now'))
+    )""")
+
+    # Migrate existing DBs
+    for col, defn in [
+        ("source",             "TEXT DEFAULT 'email'"),
+        ("user_email",         "TEXT DEFAULT NULL"),
+        ("vendor_email",       "TEXT DEFAULT NULL"),
+        ("status",             "TEXT DEFAULT 'pending'"),
+        ("phone",              "TEXT DEFAULT NULL"),
+        ("address",            "TEXT DEFAULT NULL"),
+        ("note",               "TEXT DEFAULT NULL"),
+        ("counter_price",      "REAL DEFAULT NULL"),
+        ("user_response",      "TEXT DEFAULT NULL"),
+        ("user_counter_price", "REAL DEFAULT NULL"),
     ]:
         try:
-            cursor.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
+            cursor.execute(f"ALTER TABLE offers ADD COLUMN {col} {defn}")
         except Exception:
-            pass  # column already exists
+            pass
 
+    for col, defn in [("blacklisted", "INTEGER DEFAULT 0")]:
+        try:
+            cursor.execute(f"ALTER TABLE vendors ADD COLUMN {col} {defn}")
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+
+
+def add_contact_columns():
+    """Legacy — kept for backward compat. create_tables() now handles all cols."""
+    create_tables()
+
+
+# ── Blacklist helpers ──────────────────────────────────────────────────────────
+
+def is_blacklisted(email: str) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM blacklist WHERE email=?", (email.lower(),))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
+def get_blacklist():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT email, reason, added_at FROM blacklist ORDER BY added_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def add_to_blacklist(email: str, reason: str = ""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT OR IGNORE INTO blacklist (email, reason) VALUES (?,?)",
+            (email.lower(), reason)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_from_blacklist(email: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM blacklist WHERE email=?", (email.lower(),))
     conn.commit()
     conn.close()
 
@@ -65,21 +138,3 @@ def create_tables():
 if __name__ == "__main__":
     create_tables()
     print("Database tables created successfully.")
-
-# Run this to add contact columns to existing DB
-def add_contact_columns():
-    conn = get_connection()
-    cursor = conn.cursor()
-    for col, defn in [
-        ("phone",         "TEXT DEFAULT NULL"),
-        ("address",       "TEXT DEFAULT NULL"),
-        ("note",          "TEXT DEFAULT NULL"),
-        ("counter_price", "REAL DEFAULT NULL"),
-        ("user_response", "TEXT DEFAULT NULL"),
-    ]:
-        try:
-            cursor.execute(f"ALTER TABLE offers ADD COLUMN {col} {defn}")
-        except Exception:
-            pass
-    conn.commit()
-    conn.close()

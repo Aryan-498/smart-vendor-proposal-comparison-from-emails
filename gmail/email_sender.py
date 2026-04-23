@@ -228,3 +228,80 @@ Log in to the admin panel to take further action.
 VendorIQ System
 """
     return _send(admin_email, subject, body)
+
+
+# ── Low stock alert ───────────────────────────────────────────────────────────
+
+def send_low_stock_alert(admin_email: str, alerts: list[dict]):
+    """Email admin when products drop below threshold."""
+    lines = "\n".join(
+        f"  • {a['product'].title()}: {a['stock']} kg remaining "
+        f"(threshold: {a['threshold']} kg)"
+        for a in alerts
+    )
+    subject = f"⚠ Low Stock Alert — {len(alerts)} product(s) need attention"
+    body    = f"""Hello Admin,
+
+The following products are running low on stock:
+
+{lines}
+
+Please log in to the admin panel to restock.
+
+VendorIQ System
+"""
+    return _send(admin_email, subject, body)
+
+
+# ── Offer submission confirmation to user ─────────────────────────────────────
+
+def send_offer_confirmation(user_email: str, user_name: str,
+                             product: str, quantity: float,
+                             price: float, phone: str):
+    """Confirm to user that their offer was received."""
+    total   = quantity * price
+    subject = f"✅ Offer Received — {product.title()}"
+    body    = f"""Dear {user_name},
+
+Your offer has been successfully submitted and is under review.
+
+  Product  : {product.title()}
+  Quantity : {quantity} kg
+  Price    : ₹{price}/kg
+  Total    : ₹{total:,.0f}
+  Contact  : {phone}
+
+Our procurement team will respond shortly. You can track your offer status
+by logging into the platform.
+
+Thank you!
+VendorIQ Procurement Team
+"""
+    return _send(user_email, subject, body)
+
+
+# ── User counter offer notification to admin ──────────────────────────────────
+
+def notify_admin_user_counter(admin_email: str, user_name: str,
+                               user_email: str, product: str,
+                               quantity: float, original_price: float,
+                               user_counter_price: float):
+    """Notify admin that a user has proposed a new counter price."""
+    total   = quantity * user_counter_price
+    subject = f"🔄 Counter Proposal — {product.title()} | {user_name}"
+    body    = f"""Hello Admin,
+
+A user has proposed a counter price for your counter offer.
+
+  User           : {user_name} ({user_email})
+  Product        : {product.title()}
+  Quantity       : {quantity} kg
+  Your Price     : ₹{original_price}/kg
+  User's Counter : ₹{user_counter_price}/kg
+  Total at New   : ₹{total:,.0f}
+
+Log in to the admin panel to accept, counter again, or reject.
+
+VendorIQ System
+"""
+    return _send(admin_email, subject, body)
