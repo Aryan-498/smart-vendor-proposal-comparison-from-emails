@@ -197,3 +197,34 @@ Procurement Team
         return False
 
     return _send(user_email, subject, body)
+
+
+# ── Feature: Notify admin when user responds to counter offer ─────────────────
+
+def notify_admin_counter_response(admin_email, user_name, user_email,
+                                   product, quantity, counter_price, response):
+    """
+    Sent to admin when a user accepts or declines a counter offer.
+    response = 'accepted' or 'declined'
+    """
+    emoji   = "✅" if response == "accepted" else "❌"
+    verb    = "ACCEPTED" if response == "accepted" else "DECLINED"
+
+    subject = f"{emoji} Counter Offer {verb} — {product.title()} | {user_name}"
+    body = f"""Hello Admin,
+
+A user has responded to your counter offer.
+
+  Response  : {verb}
+  User      : {user_name} ({user_email})
+  Product   : {product.title()}
+  Quantity  : {quantity} kg
+  Your Price: ₹{counter_price}/kg
+
+{"✅ Please proceed with fulfilment and contact the user." if response == "accepted" else "❌ The user has declined. Consider revising your offer or closing the deal."}
+
+Log in to the admin panel to take further action.
+
+VendorIQ System
+"""
+    return _send(admin_email, subject, body)

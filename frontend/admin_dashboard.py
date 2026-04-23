@@ -61,6 +61,14 @@ def _set_offer_status(offer_id, status):
     conn.close()
 
 
+def _save_counter_price(offer_id, counter_price):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE offers SET counter_price=? WHERE id=?", (counter_price, offer_id))
+    conn.commit()
+    conn.close()
+
+
 def _delete_offer(offer_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -300,6 +308,8 @@ def render():
                             )
                         if ok:
                             _set_offer_status(sel_id, "counter")
+                            # save the counter price so user can see it
+                            _save_counter_price(sel_id, counter_price)
                             st.markdown(
                                 f'<div class="success-box">✓ Counter offer sent to '
                                 f'{vendor_email}.</div>', unsafe_allow_html=True

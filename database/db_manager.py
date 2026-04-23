@@ -71,9 +71,11 @@ def add_contact_columns():
     conn = get_connection()
     cursor = conn.cursor()
     for col, defn in [
-        ("phone",   "TEXT DEFAULT NULL"),
-        ("address", "TEXT DEFAULT NULL"),
-        ("note",    "TEXT DEFAULT NULL"),
+        ("phone",         "TEXT DEFAULT NULL"),
+        ("address",       "TEXT DEFAULT NULL"),
+        ("note",          "TEXT DEFAULT NULL"),
+        ("counter_price", "REAL DEFAULT NULL"),
+        ("user_response", "TEXT DEFAULT NULL"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE offers ADD COLUMN {col} {defn}")
