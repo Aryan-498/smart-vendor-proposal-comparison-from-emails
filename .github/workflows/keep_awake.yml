@@ -2,29 +2,67 @@ name: Keep VendorIQ Awake
 
 on:
   schedule:
-    # Runs every 25 minutes — Streamlit sleeps after 30 mins of inactivity
     - cron: '*/25 * * * *'
-  workflow_dispatch:  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Ping VendorIQ Streamlit App
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Puppeteer
+        run: npm install puppeteer
+
+      - name: Wake VendorIQ with real browser session
         run: |
-          echo "Pinging VendorIQ at $(date)..."
+          node << 'JSEOF'
+          const puppeteer = require('puppeteer');
 
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            --max-time 30 \
-            --retry 3 \
-            --retry-delay 5 \
-            "https://smart-vendor-proposal-comparison-from-emails-wwedl3ecdlh3wpepp.streamlit.app")
+          (async () => {
+            console.log('Launching headless browser...');
 
-          echo "HTTP Response: $RESPONSE"
+            const browser = await puppeteer.launch({
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
 
-          if [ "$RESPONSE" -eq 200 ] || [ "$RESPONSE" -eq 302 ]; then
-            echo "✅ App is awake and responding."
-          else
-            echo "⚠️ App returned status $RESPONSE — it may be waking up."
-          fi
+            const page = await browser.newPage();
+
+            try {
+              console.log('Navigating to VendorIQ...');
+
+              await page.goto(
+                'https://smart-vendor-proposal-comparison-from-emails-wwedl3ecdlh3wpepp.streamlit.app',
+                { waitUntil: 'networkidle2', timeout: 60000 }
+              );
+
+              // If sleep screen appears, click the wake button
+              const wakeBtn = await page.$('button');
+              if (wakeBtn) {
+                const btnText = await page.evaluate(b => b.innerText, wakeBtn);
+                if (btnText.includes('get this app back up')) {
+                  console.log('App was sleeping — clicking wake button...');
+                  await wakeBtn.click();
+                  await page.waitForTimeout(15000);
+                  console.log('App woken up successfully.');
+                } else {
+                  console.log('App is already awake.');
+                }
+              } else {
+                console.log('App is already awake and running.');
+              }
+
+              const title = await page.title();
+              console.log('Page title:', title);
+
+            } catch (err) {
+              console.error('Error:', err.message);
+            } finally {
+              await browser.close();
+            }
+          })();
+          JSEOF
