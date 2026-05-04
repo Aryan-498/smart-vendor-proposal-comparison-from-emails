@@ -4,7 +4,7 @@ import time
 from ai.gemini_client import get_client
 from utils.logger import log
 
-MODEL       = "gemini-2.0-flash-lite"
+MODEL       = "gemini-2.5-flash"
 MAX_RETRIES = 5
 
 
